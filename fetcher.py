@@ -145,13 +145,37 @@ def fetch_climate_data(lat, lon):
   }
 
   try:
-    res_weather = requests.get(weather_url, params=weather_params, timeout=10)
+    headers = {"User-Agent": "ClimateAnalysisApp/1.0"}
+    res_weather = requests.get(
+        weather_url,
+        params=weather_params,
+        headers=headers,
+        timeout=20,
+    )
     res_weather.raise_for_status()
     weather_json = res_weather.json()
 
-    res_air = requests.get(air_url, params=air_params, timeout=10)
-    res_air.raise_for_status()
-    air_json = res_air.json()
+    try:
+      res_air = requests.get(
+          air_url,
+          params=air_params,
+          headers=headers,
+          timeout=20,
+      )
+      res_air.raise_for_status()
+      air_json = res_air.json()
+    except requests.RequestException as first_air_error:
+      # A shorter air-quality window avoids occasional upstream quota failures.
+      fallback_air_params = {**air_params, "past_days": 7}
+      print(f"[Warning] Full air-quality request failed: {first_air_error}")
+      res_air = requests.get(
+          air_url,
+          params=fallback_air_params,
+          headers=headers,
+          timeout=20,
+      )
+      res_air.raise_for_status()
+      air_json = res_air.json()
 
     if "hourly" not in weather_json:
       raise KeyError(
@@ -165,5 +189,5 @@ def fetch_climate_data(lat, lon):
     return weather_json, air_json
 
   except Exception as e:
-    print(f"[Error] API Fetch Failed: {e}")
+    print(f"[Error] Open-Meteo fetch failed for {lat},{lon}: {e}")
     return None, None
