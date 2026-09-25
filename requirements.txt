@@ -1,4 +1,7 @@
 fastapi
 uvicorn[standard]
-pandas
 requests
+pandas
+numpy
+scikit-learn
+python-dateutil

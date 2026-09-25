@@ -103,7 +103,7 @@ def get_coordinates(city_name):
       url,
       params=params,
       headers=headers,
-      timeout=10,
+      timeout=30,
     )
     response.raise_for_status()
     data = response.json()
@@ -133,33 +133,35 @@ def fetch_climate_data(lat, lon):
 
   weather_url = "https://api.open-meteo.com/v1/forecast"
   weather_params = {
-      "latitude": lat,
-      "longitude": lon,
-      "hourly": [
-          "temperature_2m",
-          "relative_humidity_2m",
-          "surface_pressure",
-          "wind_speed_10m",
-          "precipitation_probability",
-          "precipitation",
-      ],
-      "past_days": 7,
-      "forecast_days": 3,
-  }
+    "latitude": lat,
+    "longitude": lon,
+    "hourly": [
+        "temperature_2m",
+        "relative_humidity_2m",
+        "surface_pressure",
+        "wind_speed_10m",
+        "precipitation_probability",
+        "precipitation",
+    ],
+    "past_days": 7,
+    "forecast_days": 3,
+    "timezone": "auto",
+}
 
   air_url = "https://air-quality-api.open-meteo.com/v1/air-quality"
   air_params = {
-      "latitude": lat,
-      "longitude": lon,
-      "hourly": [
-          "pm2_5",
-          "pm10",
-          "nitrogen_dioxide",
-          "carbon_monoxide",
-      ],
-      "past_days": 7,
-      "forecast_days": 3,
-  }
+    "latitude": lat,
+    "longitude": lon,
+    "hourly": [
+        "pm2_5",
+        "pm10",
+        "nitrogen_dioxide",
+        "carbon_monoxide",
+    ],
+    "past_days": 7,
+    "forecast_days": 3,
+    "timezone": "auto",
+}
 
   try:
     headers = {"User-Agent": "ClimateAnalysisApp/1.0"}
