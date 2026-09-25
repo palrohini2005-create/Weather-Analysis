@@ -47,6 +47,9 @@ import {
   Legend
 } from 'recharts';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
+  || `http://${window.location.hostname}:8000`;
+
 export default function WeatherApp() {
 
   // =========================================================
@@ -109,7 +112,7 @@ export default function WeatherApp() {
         ? `?selected_date=${encodeURIComponent(requestedDate)}`
         : '';
       const response = await fetch(
-        `http://localhost:8000/api/climate/${encodeURIComponent(city)}${dateQuery}`
+        `${API_BASE_URL}/api/climate/${encodeURIComponent(city)}${dateQuery}`
       );
 
       if (!response.ok) {
@@ -146,7 +149,7 @@ export default function WeatherApp() {
     const refreshCurrentWeather = async () => {
       try {
         const response = await fetch(
-          `http://localhost:8000/api/climate/${encodeURIComponent(searchedCity)}`
+          `${API_BASE_URL}/api/climate/${encodeURIComponent(searchedCity)}`
         );
 
         if (!response.ok) return;
@@ -198,7 +201,7 @@ export default function WeatherApp() {
 
     try {
       const response = await fetch(
-        `http://localhost:8000/api/climate/${encodeURIComponent(cityInput)}?selected_date=${encodeURIComponent(requestedDate)}`
+        `${API_BASE_URL}/api/climate/${encodeURIComponent(cityInput)}?selected_date=${encodeURIComponent(requestedDate)}`
       );
 
       if (!response.ok) {
