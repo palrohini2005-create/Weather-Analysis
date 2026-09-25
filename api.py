@@ -4,7 +4,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from fetcher import fetch_climate_data, get_coordinates
+from fetcher import ClimateFetchError, fetch_climate_data, get_coordinates
 from processor import (
     generate_active_warnings,
     get_date_hourly_data,
@@ -33,7 +33,11 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
     if not lat:
         raise HTTPException(status_code=404, detail="City not found")
 
-    raw_weather, raw_air = fetch_climate_data(lat, lon)
+    try:
+        raw_weather, raw_air = fetch_climate_data(lat, lon)
+    except ClimateFetchError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
     if not raw_weather or not raw_air:
         raise HTTPException(
             status_code=502,

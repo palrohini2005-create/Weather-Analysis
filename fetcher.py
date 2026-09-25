@@ -1,6 +1,10 @@
 import requests
 
 
+class ClimateFetchError(RuntimeError):
+  """Raised when an upstream climate provider cannot return usable data."""
+
+
 CONTINENT_COUNTRY_CODES = {
   "Africa": {
     "dz", "ao", "bj", "bw", "bf", "bi", "cm", "cv", "cf", "td",
@@ -189,5 +193,6 @@ def fetch_climate_data(lat, lon):
     return weather_json, air_json
 
   except Exception as e:
-    print(f"[Error] Open-Meteo fetch failed for {lat},{lon}: {e}")
-    return None, None
+    message = f"Open-Meteo fetch failed for {lat},{lon}: {e}"
+    print(f"[Error] {message}")
+    raise ClimateFetchError(message) from e
