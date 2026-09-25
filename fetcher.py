@@ -1,16 +1,18 @@
 
-
+import os
 import time
 
 import requests
 
 
 class ClimateFetchError(RuntimeError):
-    """Raised when an upstream climate provider cannot return usable data."""
+    """Raised when a weather provider cannot return usable data."""
 
 
 CLIMATE_CACHE = {}
 CLIMATE_CACHE_TTL_SECONDS = 15 * 60
+
+VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY")
 
 
 CONTINENT_COUNTRY_CODES = {
@@ -65,21 +67,24 @@ def get_continent(country_code):
     )
 
 
-def format_location_from_open_meteo(result):
-    """
-    Build a concise English location name from Open-Meteo geocoding data.
-    """
+def format_location(address):
+    """Build a concise location name."""
 
-    name = result.get("name", "")
-    admin1 = result.get("admin1", "")
-    country = result.get("country", "")
-    country_code = result.get("country_code", "")
+    place = (
+        address.get("city")
+        or address.get("town")
+        or address.get("village")
+        or address.get("municipality")
+        or address.get("county")
+    )
 
-    continent = get_continent(country_code)
+    state = address.get("state") or address.get("region")
+    country = address.get("country")
+    continent = get_continent(address.get("country_code"))
 
     parts = []
 
-    for value in (name, admin1, country, continent):
+    for value in (place, state, country, continent):
         if value and value.casefold() not in {
             part.casefold() for part in parts
         }:
@@ -88,23 +93,34 @@ def format_location_from_open_meteo(result):
     return ", ".join(parts)
 
 
+# ============================================================
+# GEOCODING
+# ============================================================
+
 def get_coordinates(city_name):
     """
-    Convert a city name into latitude and longitude
-    using Open-Meteo's geocoding API.
+    Convert a city name into latitude and longitude.
+
+    Nominatim is used only for geocoding.
+    Weather data comes from Visual Crossing.
     """
 
-    url = "https://geocoding-api.open-meteo.com/v1/search"
+    url = "https://nominatim.openstreetmap.org/search"
 
     params = {
-        "name": city_name.strip(),
-        "count": 1,
-        "language": "en",
+        "q": city_name.strip(),
         "format": "json",
+        "limit": 1,
+        "addressdetails": 1,
+        "accept-language": "en",
     }
 
     headers = {
-        "User-Agent": "ClimateAnalysisApp/1.0",
+        "User-Agent": (
+            "ClimateAnalysisApp/1.0 "
+            "(Weather Analysis Project)"
+        ),
+        "Accept-Language": "en",
     }
 
     try:
@@ -119,24 +135,26 @@ def get_coordinates(city_name):
 
         data = response.json()
 
-        results = data.get("results", [])
-
-        if not results:
+        if not data:
             print(
-                f"[Error] City '{city_name}' was not found "
-                "by Open-Meteo geocoding."
+                f"[Error] City '{city_name}' not found."
             )
             return None, None, None
 
-        result = results[0]
+        result = data[0]
 
-        lat = float(result["latitude"])
-        lon = float(result["longitude"])
+        lat = float(result["lat"])
+        lon = float(result["lon"])
 
-        full_name = format_location_from_open_meteo(result)
+        full_name = format_location(
+            result.get("address", {})
+        )
 
         if not full_name:
-            full_name = city_name.strip()
+            full_name = result.get(
+                "display_name",
+                city_name.strip()
+            )
 
         print(
             f"[Geocoding] {city_name} -> "
@@ -145,204 +163,191 @@ def get_coordinates(city_name):
 
         return lat, lon, full_name
 
-    except requests.Timeout:
-        print("[Error] Open-Meteo geocoding request timed out.")
-        return None, None, None
-
-    except requests.RequestException as error:
-        print(
-            f"[Error] Open-Meteo geocoding request failed: "
-            f"{error}"
-        )
-        return None, None, None
-
-    except (ValueError, KeyError, TypeError) as error:
-        print(
-            f"[Error] Invalid geocoding response: "
-            f"{error}"
-        )
-        return None, None, None
-
     except Exception as error:
         print(
-            f"[Error] Unexpected geocoding error: "
-            f"{error}"
+            f"[Error] Geocoding failed: {error}"
         )
+
         return None, None, None
 
 
-def _get_retry_delay(response, attempt):
+# ============================================================
+# VISUAL CROSSING WEATHER
+# ============================================================
+
+def fetch_visual_crossing_weather(lat, lon):
     """
-    Calculate retry delay for rate-limited requests.
-    """
+    Fetch weather data from Visual Crossing.
 
-    retry_after = response.headers.get("Retry-After")
-
-    if retry_after:
-        try:
-            return min(int(retry_after), 60)
-        except ValueError:
-            pass
-
-    return min(5 * (2 ** attempt), 60)
-
-
-def _request_open_meteo(url, params, headers, label):
-    """
-    Make an Open-Meteo request with retry handling
-    for rate limits and temporary timeouts.
+    Returns data in an Open-Meteo-compatible structure so
+    processor.py does not need to be changed.
     """
 
-    max_attempts = 3
+    if not VISUAL_CROSSING_API_KEY:
+        raise ClimateFetchError(
+            "VISUAL_CROSSING_API_KEY is not configured."
+        )
 
-    for attempt in range(max_attempts):
+    location = f"{lat},{lon}"
 
-        try:
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=30,
-            )
-
-            # ---------------------------------------------
-            # RATE LIMIT
-            # ---------------------------------------------
-
-            if response.status_code == 429:
-
-                if attempt < max_attempts - 1:
-
-                    wait_seconds = _get_retry_delay(
-                        response,
-                        attempt,
-                    )
-
-                    print(
-                        f"[Warning] {label} rate limit reached "
-                        f"(429). Retrying in "
-                        f"{wait_seconds} seconds..."
-                    )
-
-                    time.sleep(wait_seconds)
-                    continue
-
-                raise ClimateFetchError(
-                    f"{label} is temporarily rate-limited "
-                    f"(HTTP 429). Please try again shortly."
-                )
-
-            # ---------------------------------------------
-            # OTHER HTTP ERRORS
-            # ---------------------------------------------
-
-            response.raise_for_status()
-
-            return response.json()
-
-        # ---------------------------------------------
-        # TIMEOUT
-        # ---------------------------------------------
-
-        except requests.Timeout as error:
-
-            if attempt < max_attempts - 1:
-
-                wait_seconds = 3 * (attempt + 1)
-
-                print(
-                    f"[Warning] {label} timed out. "
-                    f"Retrying in {wait_seconds} seconds..."
-                )
-
-                time.sleep(wait_seconds)
-                continue
-
-            raise ClimateFetchError(
-                f"{label} request timed out."
-            ) from error
-
-        # ---------------------------------------------
-        # REQUEST ERROR
-        # ---------------------------------------------
-
-        except requests.RequestException as error:
-
-            raise ClimateFetchError(
-                f"{label} request failed: {error}"
-            ) from error
-
-    raise ClimateFetchError(
-        f"{label} request failed after retries."
+    url = (
+        "https://weather.visualcrossing.com/"
+        "VisualCrossingWebServices/rest/services/timeline/"
+        f"{location}"
     )
 
-
-def fetch_climate_data(lat, lon):
-    """
-    Fetch weather and air-quality data from Open-Meteo.
-    """
-
-    cache_key = (
-        round(lat, 4),
-        round(lon, 4),
-    )
-
-    # =====================================================
-    # CHECK CACHE
-    # =====================================================
-
-    cached_entry = CLIMATE_CACHE.get(cache_key)
-
-    if cached_entry:
-
-        cached_at, cached_data = cached_entry
-
-        if (
-            time.monotonic() - cached_at
-            < CLIMATE_CACHE_TTL_SECONDS
-        ):
-
-            print(
-                "[Cache] Returning fresh climate data."
-            )
-
-            return cached_data
-
-    # =====================================================
-    # WEATHER API
-    # =====================================================
-
-    weather_url = (
-        "https://api.open-meteo.com/v1/forecast"
-    )
-
-    weather_params = {
-        "latitude": lat,
-        "longitude": lon,
-
-        "hourly": [
-            "temperature_2m",
-            "relative_humidity_2m",
-            "surface_pressure",
-            "wind_speed_10m",
-            "precipitation_probability",
-            "precipitation",
-        ],
-
-        "past_days": 7,
-        "forecast_days": 3,
-        "timezone": "auto",
+    params = {
+        "key": VISUAL_CROSSING_API_KEY,
+        "unitGroup": "metric",
+        "include": "days,hours",
+        "elements": (
+            "datetime,"
+            "temp,"
+            "humidity,"
+            "pressure,"
+            "windspeed,"
+            "precipprob,"
+            "precip"
+        ),
+        "contentType": "json",
     }
 
-    # =====================================================
-    # AIR QUALITY API
-    # =====================================================
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            timeout=30,
+        )
 
-    air_url = (
-        "https://air-quality-api.open-meteo.com/v1/air-quality"
+        if response.status_code == 401:
+            raise ClimateFetchError(
+                "Visual Crossing API key is invalid."
+            )
+
+        if response.status_code == 429:
+            raise ClimateFetchError(
+                "Visual Crossing API rate limit reached."
+            )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if "days" not in data:
+            raise ClimateFetchError(
+                "Visual Crossing returned no weather data."
+            )
+
+        times = []
+        temperatures = []
+        humidities = []
+        pressures = []
+        wind_speeds = []
+        rain_probabilities = []
+        precipitation = []
+
+        # ----------------------------------------------------
+        # Convert Visual Crossing daily/hourly response
+        # into the structure expected by processor.py
+        # ----------------------------------------------------
+
+        for day in data.get("days", []):
+
+            for hour in day.get("hours", []):
+
+                date_value = day.get("datetime")
+                time_value = hour.get("datetime")
+
+                if not date_value or not time_value:
+                    continue
+
+                timestamp = f"{date_value} {time_value}"
+
+                times.append(timestamp)
+
+                temperatures.append(
+                    hour.get("temp")
+                )
+
+                humidities.append(
+                    hour.get("humidity")
+                )
+
+                pressures.append(
+                    hour.get("pressure")
+                )
+
+                wind_speeds.append(
+                    hour.get("windspeed")
+                )
+
+                rain_probabilities.append(
+                    hour.get("precipprob", 0)
+                )
+
+                precipitation.append(
+                    hour.get("precip", 0)
+                )
+
+        if not times:
+            raise ClimateFetchError(
+                "Visual Crossing returned no hourly weather data."
+            )
+
+        weather_json = {
+            "hourly": {
+                "time": times,
+                "temperature_2m": temperatures,
+                "relative_humidity_2m": humidities,
+                "surface_pressure": pressures,
+                "wind_speed_10m": wind_speeds,
+                "precipitation_probability": rain_probabilities,
+                "precipitation": precipitation,
+            }
+        }
+
+        print(
+            "[Success] Visual Crossing weather data fetched."
+        )
+
+        return weather_json
+
+    except ClimateFetchError:
+        raise
+
+    except requests.Timeout as error:
+        raise ClimateFetchError(
+            "Visual Crossing weather request timed out."
+        ) from error
+
+    except requests.RequestException as error:
+        raise ClimateFetchError(
+            f"Visual Crossing weather request failed: {error}"
+        ) from error
+
+    except Exception as error:
+        raise ClimateFetchError(
+            f"Invalid Visual Crossing response: {error}"
+        ) from error
+
+
+# ============================================================
+# OPEN-METEO AIR QUALITY
+# ============================================================
+
+def fetch_air_quality(lat, lon):
+    """
+    Fetch air-quality data from Open-Meteo.
+
+    This is kept separate from the weather provider.
+    """
+
+    url = (
+        "https://air-quality-api.open-meteo.com/"
+        "v1/air-quality"
     )
 
-    air_params = {
+    params = {
         "latitude": lat,
         "longitude": lon,
 
@@ -363,140 +368,173 @@ def fetch_climate_data(lat, lon):
     }
 
     try:
-
-        # =================================================
-        # WEATHER
-        # =================================================
-
-        weather_json = _request_open_meteo(
-            weather_url,
-            weather_params,
-            headers,
-            "Open-Meteo weather API",
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=30,
         )
 
-        # =================================================
-        # AIR QUALITY
-        # =================================================
-
-        try:
-
-            air_json = _request_open_meteo(
-                air_url,
-                air_params,
-                headers,
-                "Open-Meteo air-quality API",
-            )
-
-        except ClimateFetchError as first_air_error:
-
-            print(
-                "[Warning] Full air-quality request failed: "
-                f"{first_air_error}"
-            )
-
-            # Smaller fallback request.
-            fallback_air_params = {
-                **air_params,
-                "past_days": 0,
-                "forecast_days": 3,
-            }
-
-            air_json = _request_open_meteo(
-                air_url,
-                fallback_air_params,
-                headers,
-                "Open-Meteo fallback air-quality API",
-            )
-
-        # =================================================
-        # VALIDATE WEATHER
-        # =================================================
-
-        if "hourly" not in weather_json:
-
+        if response.status_code == 429:
             raise ClimateFetchError(
-                "Weather API returned no hourly data: "
-                f"{weather_json.get('reason', 'Unknown error')}"
+                "Open-Meteo air-quality API is currently "
+                "rate-limited."
             )
 
-        # =================================================
-        # VALIDATE AIR QUALITY
-        # =================================================
+        response.raise_for_status()
 
-        if "hourly" not in air_json:
+        data = response.json()
 
+        if "hourly" not in data:
             raise ClimateFetchError(
-                "Air Quality API returned no hourly data: "
-                f"{air_json.get('reason', 'Unknown error')}"
+                "Open-Meteo air-quality API returned "
+                "no hourly data."
             )
-
-        # =================================================
-        # STORE CACHE
-        # =================================================
-
-        climate_data = (
-            weather_json,
-            air_json,
-        )
-
-        CLIMATE_CACHE[cache_key] = (
-            time.monotonic(),
-            climate_data,
-        )
 
         print(
-            "[Success] Climate data fetched successfully."
+            "[Success] Air-quality data fetched."
         )
 
-        return climate_data
+        return data
+
+    except ClimateFetchError:
+        raise
+
+    except requests.Timeout as error:
+        raise ClimateFetchError(
+            "Air-quality request timed out."
+        ) from error
+
+    except requests.RequestException as error:
+        raise ClimateFetchError(
+            f"Air-quality request failed: {error}"
+        ) from error
+
+
+# ============================================================
+# FALLBACK AIR QUALITY
+# ============================================================
+
+def create_empty_air_quality(weather_json):
+    """
+    Create safe empty air-quality values if the air-quality
+    provider is temporarily unavailable.
+
+    This prevents the entire weather dashboard from failing.
+    """
+
+    times = weather_json["hourly"]["time"]
+
+    empty_values = [None] * len(times)
+
+    return {
+        "hourly": {
+            "time": times,
+            "pm2_5": empty_values,
+            "pm10": empty_values,
+            "nitrogen_dioxide": empty_values,
+            "carbon_monoxide": empty_values,
+        }
+    }
+
+
+# ============================================================
+# MAIN FUNCTION
+# ============================================================
+
+def fetch_climate_data(lat, lon):
+    """
+    Fetch weather + air-quality data.
+
+    Weather:
+        Visual Crossing
+
+    Air Quality:
+        Open-Meteo
+
+    The return structure remains compatible with processor.py.
+    """
+
+    cache_key = (
+        round(lat, 4),
+        round(lon, 4),
+    )
+
+    # --------------------------------------------------------
+    # CACHE
+    # --------------------------------------------------------
+
+    cached_entry = CLIMATE_CACHE.get(cache_key)
+
+    if cached_entry:
+
+        cached_at, cached_data = cached_entry
+
+        if (
+            time.monotonic() - cached_at
+            < CLIMATE_CACHE_TTL_SECONDS
+        ):
+
+            print(
+                "[Cache] Returning cached climate data."
+            )
+
+            return cached_data
+
+    # --------------------------------------------------------
+    # WEATHER
+    # --------------------------------------------------------
+
+    weather_json = fetch_visual_crossing_weather(
+        lat,
+        lon
+    )
+
+    # --------------------------------------------------------
+    # AIR QUALITY
+    # --------------------------------------------------------
+
+    try:
+
+        air_json = fetch_air_quality(
+            lat,
+            lon
+        )
 
     except ClimateFetchError as error:
 
         print(
-            f"[Error] {error}"
-        )
-
-        # =================================================
-        # STALE CACHE FALLBACK
-        # =================================================
-
-        if cached_entry:
-
-            print(
-                "[Warning] Returning stale cached "
-                "climate data."
-            )
-
-            return cached_entry[1]
-
-        raise
-
-    except Exception as error:
-
-        message = (
-            f"Open-Meteo fetch failed for "
-            f"{lat},{lon}: {error}"
+            "[Warning] Air-quality unavailable: "
+            f"{error}"
         )
 
         print(
-            f"[Error] {message}"
+            "[Warning] Continuing with weather data."
         )
 
-        # =================================================
-        # STALE CACHE FALLBACK
-        # =================================================
+        air_json = create_empty_air_quality(
+            weather_json
+        )
 
-        if cached_entry:
+    # --------------------------------------------------------
+    # CACHE
+    # --------------------------------------------------------
 
-            print(
-                "[Warning] Returning stale cached "
-                "climate data."
-            )
+    climate_data = (
+        weather_json,
+        air_json,
+    )
 
-            return cached_entry[1]
+    CLIMATE_CACHE[cache_key] = (
+        time.monotonic(),
+        climate_data,
+    )
 
-        raise ClimateFetchError(
-            message
-        ) from error
+    print(
+        "[Success] Climate data prepared successfully."
+    )
+
+    return climate_data
+
+
 

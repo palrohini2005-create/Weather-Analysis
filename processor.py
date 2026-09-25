@@ -91,6 +91,10 @@ def generate_active_warnings(df_today):
   max_wind = df_today["wind_speed"].max()
   max_humidity = df_today["humidity"].max()
   max_pm25 = df_today["pm2_5"].max()
+
+  if pd.isna(max_pm25):
+    max_pm25 = 0
+    
   max_aqi = calculate_pm25_aqi(max_pm25)
 
   # Temperature Rules
