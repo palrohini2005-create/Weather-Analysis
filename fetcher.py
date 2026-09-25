@@ -1,8 +1,14 @@
+import time
+
 import requests
 
 
 class ClimateFetchError(RuntimeError):
   """Raised when an upstream climate provider cannot return usable data."""
+
+
+CLIMATE_CACHE = {}
+CLIMATE_CACHE_TTL_SECONDS = 15 * 60
 
 
 CONTINENT_COUNTRY_CODES = {
@@ -118,6 +124,13 @@ def get_coordinates(city_name):
 
 def fetch_climate_data(lat, lon):
   """Fetches weather and air-quality data from Open-Meteo."""
+  cache_key = (round(lat, 4), round(lon, 4))
+  cached_entry = CLIMATE_CACHE.get(cache_key)
+  if cached_entry:
+    cached_at, cached_data = cached_entry
+    if time.monotonic() - cached_at < CLIMATE_CACHE_TTL_SECONDS:
+      return cached_data
+
   weather_url = "https://api.open-meteo.com/v1/forecast"
   weather_params = {
       "latitude": lat,
@@ -190,9 +203,16 @@ def fetch_climate_data(lat, lon):
           f"Air Quality API Error: {air_json.get('reason', 'Unknown error')}"
       )
 
-    return weather_json, air_json
+    climate_data = weather_json, air_json
+    CLIMATE_CACHE[cache_key] = (time.monotonic(), climate_data)
+    return climate_data
 
   except Exception as e:
     message = f"Open-Meteo fetch failed for {lat},{lon}: {e}"
     print(f"[Error] {message}")
+
+    if cached_entry:
+      print("[Warning] Returning stale cached climate data.")
+      return cached_entry[1]
+
     raise ClimateFetchError(message) from e
