@@ -126,8 +126,8 @@ def fetch_climate_data(lat, lon):
           "precipitation_probability",
           "precipitation",
       ],
-      "past_days": 30,
-      "forecast_days": 7,
+      "past_days": 7,
+      "forecast_days": 3,
   }
 
   air_url = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -140,8 +140,8 @@ def fetch_climate_data(lat, lon):
           "nitrogen_dioxide",
           "carbon_monoxide",
       ],
-      "past_days": 30,
-      "forecast_days": 7,
+      "past_days": 7,
+      "forecast_days": 3,
   }
 
   try:
