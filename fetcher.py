@@ -1,4 +1,5 @@
 
+
 import time
 
 import requests
@@ -64,24 +65,21 @@ def get_continent(country_code):
     )
 
 
-def format_location(address):
-    """Build a concise English place, state, country, continent label."""
+def format_location_from_open_meteo(result):
+    """
+    Build a concise English location name from Open-Meteo geocoding data.
+    """
 
-    place = (
-        address.get("city")
-        or address.get("town")
-        or address.get("village")
-        or address.get("municipality")
-        or address.get("county")
-    )
+    name = result.get("name", "")
+    admin1 = result.get("admin1", "")
+    country = result.get("country", "")
+    country_code = result.get("country_code", "")
 
-    state = address.get("state") or address.get("region")
-    country = address.get("country")
-    continent = get_continent(address.get("country_code"))
+    continent = get_continent(country_code)
 
     parts = []
 
-    for value in (place, state, country, continent):
+    for value in (name, admin1, country, continent):
         if value and value.casefold() not in {
             part.casefold() for part in parts
         }:
@@ -91,21 +89,22 @@ def format_location(address):
 
 
 def get_coordinates(city_name):
-    """Convert a city name into latitude and longitude using Nominatim."""
+    """
+    Convert a city name into latitude and longitude
+    using Open-Meteo's geocoding API.
+    """
 
-    url = "https://nominatim.openstreetmap.org/search"
+    url = "https://geocoding-api.open-meteo.com/v1/search"
 
     params = {
-        "q": city_name,
+        "name": city_name.strip(),
+        "count": 1,
+        "language": "en",
         "format": "json",
-        "limit": 1,
-        "addressdetails": 1,
-        "accept-language": "en",
     }
 
     headers = {
-        "User-Agent": "ClimateAnalysisApp/1.0 (Weather Analysis Project)",
-        "Accept-Language": "en",
+        "User-Agent": "ClimateAnalysisApp/1.0",
     }
 
     try:
@@ -113,38 +112,69 @@ def get_coordinates(city_name):
             url,
             params=params,
             headers=headers,
-            timeout=30,
+            timeout=20,
         )
 
         response.raise_for_status()
 
         data = response.json()
 
-        if not data:
-            raise ValueError(f"City '{city_name}' not found.")
+        results = data.get("results", [])
 
-        lat = float(data[0]["lat"])
-        lon = float(data[0]["lon"])
+        if not results:
+            print(
+                f"[Error] City '{city_name}' was not found "
+                "by Open-Meteo geocoding."
+            )
+            return None, None, None
 
-        full_name = format_location(
-            data[0].get("address", {})
-        )
+        result = results[0]
+
+        lat = float(result["latitude"])
+        lon = float(result["longitude"])
+
+        full_name = format_location_from_open_meteo(result)
 
         if not full_name:
-            full_name = data[0].get(
-                "display_name",
-                city_name
-            )
+            full_name = city_name.strip()
+
+        print(
+            f"[Geocoding] {city_name} -> "
+            f"{lat}, {lon} -> {full_name}"
+        )
 
         return lat, lon, full_name
 
-    except Exception as e:
-        print(f"[Error] Geocoding failed: {e}")
+    except requests.Timeout:
+        print("[Error] Open-Meteo geocoding request timed out.")
+        return None, None, None
+
+    except requests.RequestException as error:
+        print(
+            f"[Error] Open-Meteo geocoding request failed: "
+            f"{error}"
+        )
+        return None, None, None
+
+    except (ValueError, KeyError, TypeError) as error:
+        print(
+            f"[Error] Invalid geocoding response: "
+            f"{error}"
+        )
+        return None, None, None
+
+    except Exception as error:
+        print(
+            f"[Error] Unexpected geocoding error: "
+            f"{error}"
+        )
         return None, None, None
 
 
 def _get_retry_delay(response, attempt):
-    """Calculate a safe retry delay for rate-limited requests."""
+    """
+    Calculate retry delay for rate-limited requests.
+    """
 
     retry_after = response.headers.get("Retry-After")
 
@@ -154,19 +184,19 @@ def _get_retry_delay(response, attempt):
         except ValueError:
             pass
 
-    # Exponential backoff:
-    # attempt 0 -> 5 seconds
-    # attempt 1 -> 10 seconds
-    # attempt 2 -> 20 seconds
     return min(5 * (2 ** attempt), 60)
 
 
 def _request_open_meteo(url, params, headers, label):
-    """Make an Open-Meteo request with 429 retry handling."""
+    """
+    Make an Open-Meteo request with retry handling
+    for rate limits and temporary timeouts.
+    """
 
     max_attempts = 3
 
     for attempt in range(max_attempts):
+
         try:
             response = requests.get(
                 url,
@@ -175,8 +205,14 @@ def _request_open_meteo(url, params, headers, label):
                 timeout=30,
             )
 
+            # ---------------------------------------------
+            # RATE LIMIT
+            # ---------------------------------------------
+
             if response.status_code == 429:
+
                 if attempt < max_attempts - 1:
+
                     wait_seconds = _get_retry_delay(
                         response,
                         attempt,
@@ -196,12 +232,22 @@ def _request_open_meteo(url, params, headers, label):
                     f"(HTTP 429). Please try again shortly."
                 )
 
+            # ---------------------------------------------
+            # OTHER HTTP ERRORS
+            # ---------------------------------------------
+
             response.raise_for_status()
 
             return response.json()
 
+        # ---------------------------------------------
+        # TIMEOUT
+        # ---------------------------------------------
+
         except requests.Timeout as error:
+
             if attempt < max_attempts - 1:
+
                 wait_seconds = 3 * (attempt + 1)
 
                 print(
@@ -216,7 +262,12 @@ def _request_open_meteo(url, params, headers, label):
                 f"{label} request timed out."
             ) from error
 
+        # ---------------------------------------------
+        # REQUEST ERROR
+        # ---------------------------------------------
+
         except requests.RequestException as error:
+
             raise ClimateFetchError(
                 f"{label} request failed: {error}"
             ) from error
@@ -227,32 +278,39 @@ def _request_open_meteo(url, params, headers, label):
 
 
 def fetch_climate_data(lat, lon):
-    """Fetch weather and air-quality data from Open-Meteo."""
+    """
+    Fetch weather and air-quality data from Open-Meteo.
+    """
 
     cache_key = (
         round(lat, 4),
         round(lon, 4),
     )
 
-    # ---------------------------------------------------------
+    # =====================================================
     # CHECK CACHE
-    # ---------------------------------------------------------
+    # =====================================================
 
     cached_entry = CLIMATE_CACHE.get(cache_key)
 
     if cached_entry:
+
         cached_at, cached_data = cached_entry
 
         if (
             time.monotonic() - cached_at
             < CLIMATE_CACHE_TTL_SECONDS
         ):
-            print("[Cache] Returning fresh climate data.")
+
+            print(
+                "[Cache] Returning fresh climate data."
+            )
+
             return cached_data
 
-    # ---------------------------------------------------------
-    # OPEN-METEO WEATHER
-    # ---------------------------------------------------------
+    # =====================================================
+    # WEATHER API
+    # =====================================================
 
     weather_url = (
         "https://api.open-meteo.com/v1/forecast"
@@ -273,15 +331,12 @@ def fetch_climate_data(lat, lon):
 
         "past_days": 7,
         "forecast_days": 3,
-
-        # Automatically use the timezone
-        # of the requested location.
         "timezone": "auto",
     }
 
-    # ---------------------------------------------------------
-    # OPEN-METEO AIR QUALITY
-    # ---------------------------------------------------------
+    # =====================================================
+    # AIR QUALITY API
+    # =====================================================
 
     air_url = (
         "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -300,19 +355,18 @@ def fetch_climate_data(lat, lon):
 
         "past_days": 7,
         "forecast_days": 3,
-
         "timezone": "auto",
     }
 
     headers = {
-        "User-Agent": "ClimateAnalysisApp/1.0"
+        "User-Agent": "ClimateAnalysisApp/1.0",
     }
 
     try:
 
-        # -----------------------------------------------------
-        # WEATHER REQUEST
-        # -----------------------------------------------------
+        # =================================================
+        # WEATHER
+        # =================================================
 
         weather_json = _request_open_meteo(
             weather_url,
@@ -321,9 +375,9 @@ def fetch_climate_data(lat, lon):
             "Open-Meteo weather API",
         )
 
-        # -----------------------------------------------------
-        # AIR QUALITY REQUEST
-        # -----------------------------------------------------
+        # =================================================
+        # AIR QUALITY
+        # =================================================
 
         try:
 
@@ -355,9 +409,9 @@ def fetch_climate_data(lat, lon):
                 "Open-Meteo fallback air-quality API",
             )
 
-        # -----------------------------------------------------
-        # VALIDATE WEATHER DATA
-        # -----------------------------------------------------
+        # =================================================
+        # VALIDATE WEATHER
+        # =================================================
 
         if "hourly" not in weather_json:
 
@@ -366,9 +420,9 @@ def fetch_climate_data(lat, lon):
                 f"{weather_json.get('reason', 'Unknown error')}"
             )
 
-        # -----------------------------------------------------
-        # VALIDATE AIR QUALITY DATA
-        # -----------------------------------------------------
+        # =================================================
+        # VALIDATE AIR QUALITY
+        # =================================================
 
         if "hourly" not in air_json:
 
@@ -377,9 +431,9 @@ def fetch_climate_data(lat, lon):
                 f"{air_json.get('reason', 'Unknown error')}"
             )
 
-        # -----------------------------------------------------
-        # STORE DATA
-        # -----------------------------------------------------
+        # =================================================
+        # STORE CACHE
+        # =================================================
 
         climate_data = (
             weather_json,
@@ -403,9 +457,9 @@ def fetch_climate_data(lat, lon):
             f"[Error] {error}"
         )
 
-        # -----------------------------------------------------
-        # USE STALE CACHE IF AVAILABLE
-        # -----------------------------------------------------
+        # =================================================
+        # STALE CACHE FALLBACK
+        # =================================================
 
         if cached_entry:
 
@@ -429,9 +483,9 @@ def fetch_climate_data(lat, lon):
             f"[Error] {message}"
         )
 
-        # -----------------------------------------------------
-        # USE STALE CACHE IF AVAILABLE
-        # -----------------------------------------------------
+        # =================================================
+        # STALE CACHE FALLBACK
+        # =================================================
 
         if cached_entry:
 
