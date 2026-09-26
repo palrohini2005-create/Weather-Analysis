@@ -1,4 +1,5 @@
 
+
 # processor.py
 from datetime import datetime
 import pandas as pd
@@ -26,7 +27,7 @@ def process_raw_data(weather_json, air_json):
         "co": air_json["hourly"]["carbon_monoxide"],
   })
 
-  # Outer merge keeps the full ~30-day weather history even where
+  # Outer merge keeps the full hourly window (past 7 + next 7 days) even where
   # air-quality hours are missing (provider gaps, shorter forecast).
   # Missing pollution values are interpolated so charts stay continuous.
   df = pd.merge(df_weather, df_air, on="time", how="outer")
