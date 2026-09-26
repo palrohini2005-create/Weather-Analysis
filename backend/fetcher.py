@@ -1,3 +1,16 @@
+"""Climate + air-quality data acquisition.
+
+Weather providers (in order of preference):
+
+1. Visual Crossing  - used ONLY when VISUAL_CROSSING_API_KEY is configured.
+2. Open-Meteo       - free, keyless fallback AND default provider.
+
+Air quality always comes from Open-Meteo (free, keyless).  If it is
+temporarily unavailable the dashboard still works: empty (null)
+pollution columns are generated so weather analytics never crash.
+
+Every function returns structures compatible with processor.py.
+"""
 
 import os
 import time
@@ -13,6 +26,10 @@ CLIMATE_CACHE = {}
 CLIMATE_CACHE_TTL_SECONDS = 15 * 60
 
 VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY")
+
+OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+OPEN_METEO_GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
 
 CONTINENT_COUNTRY_CODES = {
@@ -94,17 +111,10 @@ def format_location(address):
 
 
 # ============================================================
-# GEOCODING
+# GEOCODING (Nominatim primary, Open-Meteo fallback)
 # ============================================================
 
-def get_coordinates(city_name):
-    """
-    Convert a city name into latitude and longitude.
-
-    Nominatim is used only for geocoding.
-    Weather data comes from Visual Crossing.
-    """
-
+def _geocode_with_nominatim(city_name):
     url = "https://nominatim.openstreetmap.org/search"
 
     params = {
@@ -123,56 +133,161 @@ def get_coordinates(city_name):
         "Accept-Language": "en",
     }
 
-    try:
-        response = requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=20,
-        )
+    response = requests.get(
+        url,
+        params=params,
+        headers=headers,
+        timeout=20,
+    )
+    response.raise_for_status()
+    data = response.json()
 
-        response.raise_for_status()
+    if not data:
+        return None
 
-        data = response.json()
+    result = data[0]
+    full_name = format_location(result.get("address", {}))
+    if not full_name:
+        full_name = result.get("display_name", city_name.strip())
 
-        if not data:
-            print(
-                f"[Error] City '{city_name}' not found."
-            )
-            return None, None, None
+    return float(result["lat"]), float(result["lon"]), full_name
 
-        result = data[0]
 
-        lat = float(result["lat"])
-        lon = float(result["lon"])
+def _geocode_with_open_meteo(city_name):
+    """Keyless fallback geocoder (no strict User-Agent policy)."""
+    response = requests.get(
+        OPEN_METEO_GEOCODING_URL,
+        params={
+            "name": city_name.strip(),
+            "count": 1,
+            "language": "en",
+            "format": "json",
+        },
+        headers={"User-Agent": "ClimateAnalysisApp/1.0"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    data = response.json() or {}
+    results = data.get("results") or []
+    if not results:
+        return None
 
-        full_name = format_location(
-            result.get("address", {})
-        )
+    best = results[0]
+    parts = [
+        best.get("name"),
+        best.get("admin1"),
+        best.get("country"),
+    ]
+    full_name = ", ".join(p for p in parts if p) or city_name.strip()
+    return float(best["latitude"]), float(best["longitude"]), full_name
 
-        if not full_name:
-            full_name = result.get(
-                "display_name",
-                city_name.strip()
-            )
 
-        print(
-            f"[Geocoding] {city_name} -> "
-            f"{lat}, {lon} -> {full_name}"
-        )
+def get_coordinates(city_name):
+    """
+    Convert a city name into latitude and longitude.
 
-        return lat, lon, full_name
+    Tries Nominatim first, then falls back to the Open-Meteo
+    geocoding API (important on cloud hosts where Nominatim
+    sometimes rate-limits shared IPs).
+    """
 
-    except Exception as error:
-        print(
-            f"[Error] Geocoding failed: {error}"
-        )
-
+    if not city_name or not city_name.strip():
         return None, None, None
+
+    cleaned = city_name.strip()
+
+    for provider_name, provider in (
+        ("Nominatim", _geocode_with_nominatim),
+        ("Open-Meteo geocoding", _geocode_with_open_meteo),
+    ):
+        try:
+            resolved = provider(cleaned)
+        except Exception as error:
+            print(f"[Warning] {provider_name} geocoding failed: {error}")
+            continue
+
+        if resolved:
+            lat, lon, full_name = resolved
+            print(f"[Geocoding] {cleaned} -> {lat}, {lon} -> {full_name}")
+            return lat, lon, full_name
+
+    print(f"[Error] City '{cleaned}' not found.")
+    return None, None, None
 
 
 # ============================================================
-# VISUAL CROSSING WEATHER
+# OPEN-METEO WEATHER (free, no API key required)
+# ============================================================
+
+def fetch_open_meteo_weather(lat, lon):
+    """Fetch weather data from Open-Meteo (keyless)."""
+
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": [
+            "temperature_2m",
+            "relative_humidity_2m",
+            "surface_pressure",
+            "wind_speed_10m",
+            "precipitation_probability",
+            "precipitation",
+        ],
+        "past_days": 7,
+        "forecast_days": 7,
+        "timezone": "auto",
+        "wind_speed_unit": "kmh",
+    }
+
+    try:
+        response = requests.get(
+            OPEN_METEO_FORECAST_URL,
+            params=params,
+            headers={"User-Agent": "ClimateAnalysisApp/1.0"},
+            timeout=30,
+        )
+
+        if response.status_code == 429:
+            raise ClimateFetchError(
+                "Open-Meteo weather API is currently rate-limited. "
+                "Please retry in a minute."
+            )
+
+        response.raise_for_status()
+        data = response.json() or {}
+        hourly = data.get("hourly") or {}
+
+        required = (
+            "time", "temperature_2m", "relative_humidity_2m",
+            "surface_pressure", "wind_speed_10m",
+            "precipitation_probability", "precipitation",
+        )
+        if not hourly.get("time") or any(k not in hourly for k in required):
+            raise ClimateFetchError(
+                "Open-Meteo returned no hourly weather data."
+            )
+
+        print("[Success] Open-Meteo weather data fetched.")
+        return {"hourly": {key: hourly[key] for key in required}}
+
+    except ClimateFetchError:
+        raise
+    except requests.Timeout as error:
+        raise ClimateFetchError(
+            "Open-Meteo weather request timed out."
+        ) from error
+    except requests.RequestException as error:
+        raise ClimateFetchError(
+            f"Open-Meteo weather request failed: {error}"
+        ) from error
+    except Exception as error:
+        raise ClimateFetchError(
+            f"Invalid Open-Meteo response: {error}"
+        ) from error
+
+
+# ============================================================
+# VISUAL CROSSING WEATHER (optional, needs API key)
 # ============================================================
 
 def fetch_visual_crossing_weather(lat, lon):
@@ -342,11 +457,6 @@ def fetch_air_quality(lat, lon):
     This is kept separate from the weather provider.
     """
 
-    url = (
-        "https://air-quality-api.open-meteo.com/"
-        "v1/air-quality"
-    )
-
     params = {
         "latitude": lat,
         "longitude": lon,
@@ -369,7 +479,7 @@ def fetch_air_quality(lat, lon):
 
     try:
         response = requests.get(
-            url,
+            OPEN_METEO_AIR_QUALITY_URL,
             params=params,
             headers=headers,
             timeout=30,
@@ -442,15 +552,46 @@ def create_empty_air_quality(weather_json):
 # MAIN FUNCTION
 # ============================================================
 
+def _resolve_weather(lat, lon):
+    """Visual Crossing when a key exists, otherwise Open-Meteo.
+
+    If Visual Crossing is configured but fails (bad key, quota,
+    outage), automatically falls back to Open-Meteo so the API
+    never goes down because of one provider.
+    """
+
+    visual_crossing_error = None
+
+    if VISUAL_CROSSING_API_KEY:
+        try:
+            return fetch_visual_crossing_weather(lat, lon), "visual-crossing"
+        except ClimateFetchError as error:
+            visual_crossing_error = error
+            print(f"[Warning] Visual Crossing unavailable: {error}")
+            print("[Warning] Falling back to Open-Meteo weather.")
+
+    try:
+        return fetch_open_meteo_weather(lat, lon), "open-meteo"
+    except ClimateFetchError as error:
+        if visual_crossing_error is not None:
+            raise ClimateFetchError(
+                f"Weather providers unavailable. "
+                f"Visual Crossing: {visual_crossing_error} "
+                f"Open-Meteo: {error}"
+            ) from error
+        raise
+
+
 def fetch_climate_data(lat, lon):
     """
     Fetch weather + air-quality data.
 
     Weather:
-        Visual Crossing
+        Visual Crossing (if VISUAL_CROSSING_API_KEY is set),
+        otherwise Open-Meteo (free, no key required).
 
     Air Quality:
-        Open-Meteo
+        Open-Meteo (with graceful null fallback).
 
     The return structure remains compatible with processor.py.
     """
@@ -482,13 +623,11 @@ def fetch_climate_data(lat, lon):
             return cached_data
 
     # --------------------------------------------------------
-    # WEATHER
+    # WEATHER (Visual Crossing -> Open-Meteo fallback)
     # --------------------------------------------------------
 
-    weather_json = fetch_visual_crossing_weather(
-        lat,
-        lon
-    )
+    weather_json, weather_source = _resolve_weather(lat, lon)
+    print(f"[Info] Weather source: {weather_source}")
 
     # --------------------------------------------------------
     # AIR QUALITY
@@ -535,6 +674,3 @@ def fetch_climate_data(lat, lon):
     )
 
     return climate_data
-
-
-
