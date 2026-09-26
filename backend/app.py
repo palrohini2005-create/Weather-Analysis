@@ -1,3 +1,4 @@
+
 import plotly.express as px
 import streamlit as st
 from backend.fetcher import fetch_climate_data, get_coordinates
@@ -17,7 +18,7 @@ if st.sidebar.button('Analyze Climate Data'):
     lat, lon, full_name = get_coordinates(city)
 
     if lat and lon:
-      raw_weather, raw_air = fetch_climate_data(lat, lon)
+      raw_weather, raw_air, *_rest = fetch_climate_data(lat, lon)
       df = process_raw_data(raw_weather, raw_air)
 
       # Top Metrics Cards
@@ -42,3 +43,4 @@ if st.sidebar.button('Analyze Climate Data'):
         st.dataframe(df)
     else:
       st.error('City not found. Please try again.')
+        
