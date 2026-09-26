@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from 'react';
 import {
   Menu,
@@ -312,7 +313,7 @@ export default function WeatherApp() {
       return groups;
     }, {});
 
-    return Object.entries(grouped)
+    const sortedPeriods = Object.entries(grouped)
       .sort(([firstPeriod], [secondPeriod]) =>
         firstPeriod.localeCompare(secondPeriod)
       )
@@ -336,6 +337,13 @@ export default function WeatherApp() {
           )
         };
       });
+
+    // Telemetry table keeps the full 30-day archive.
+    // Charts only show a recent window so they stay readable:
+    // Daily -> last 7 days, Monthly -> last 12 months
+    // (falls back to last 2 months when only ~30-37 days exist).
+    const chartWindow = chartRange === 'monthly' ? 12 : 7;
+    return sortedPeriods.slice(-chartWindow);
   };
 
   const getPieChartData = () => {
@@ -2219,31 +2227,33 @@ export default function WeatherApp() {
                       <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2">
 
                         <span className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Chart range
+                          Chart range — {chartRange === 'monthly' ? 'Last 12 months' : 'Last 7 days'}
                         </span>
 
                         <div className="grid grid-cols-2 gap-1">
 
                           <button
                             onClick={() => setChartRange('daily')}
+                            title="Show last 7 days in chart"
                             className={`px-4 py-2 rounded-lg text-xs font-semibold transition ${
                               chartRange === 'daily'
                                 ? 'bg-white text-blue-700 shadow-sm'
                                 : 'text-slate-500 hover:text-slate-700'
                             }`}
                           >
-                            Daily
+                            Daily (7D)
                           </button>
 
                           <button
                             onClick={() => setChartRange('monthly')}
+                            title="Show last 12 months in chart"
                             className={`px-4 py-2 rounded-lg text-xs font-semibold transition ${
                               chartRange === 'monthly'
                                 ? 'bg-white text-blue-700 shadow-sm'
                                 : 'text-slate-500 hover:text-slate-700'
                             }`}
                           >
-                            Monthly
+                            Monthly (12M)
                           </button>
 
                         </div>
