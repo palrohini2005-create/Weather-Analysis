@@ -4,8 +4,8 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.fetcher import ClimateFetchError, fetch_climate_data, get_coordinates
-from backend.processor import (
+from fetcher import ClimateFetchError, fetch_climate_data, get_coordinates
+from processor import (
     generate_active_warnings,
     get_date_hourly_data,
     process_raw_data,
