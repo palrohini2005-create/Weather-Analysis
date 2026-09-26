@@ -163,25 +163,9 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
             ),
         )
 
-    _req = (selected_date or "").strip()
-    if _req and available_dates and _req not in available_dates:
-        # Old 30-day bookmark/link -> snap to today within 3-day window.
-        _req = ""
-    df_selected = get_date_hourly_data(df, target_date_str=_req or None)
-
-    if df_selected is None or df_selected.empty:
-        raise HTTPException(
-            status_code=502,
-            detail="No hourly data available for the requested date.",
-        )
-
-    try:
-        active_warnings = generate_active_warnings(df_selected)
-    except Exception:
-        active_warnings = []
-
     # Telemetry dropdown: ONLY yesterday + today + tomorrow (3 days).
     # Charts use hourly_data (7-day) + daily_history (3-month) instead.
+    # NOTE: compute available_dates BEFORE using it to validate selected_date.
     from datetime import date as _date, timedelta as _td
     _today = _date.today()
     _wanted = sorted([(_today + _td(days=d)).isoformat() for d in (-1, 0, 1)])
@@ -197,6 +181,23 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
         # Fallback: closest 3 dates to today (provider edge cases).
         _all = sorted(_have)
         available_dates = _all[-3:] if len(_all) >= 3 else _all
+
+    _req = (selected_date or "").strip()
+    if _req and _req not in available_dates:
+        # Old 30-day bookmark/link -> snap to today within 3-day window.
+        _req = ""
+    df_selected = get_date_hourly_data(df, target_date_str=_req or None)
+
+    if df_selected is None or df_selected.empty:
+        raise HTTPException(
+            status_code=502,
+            detail="No hourly data available for the requested date.",
+        )
+
+    try:
+        active_warnings = generate_active_warnings(df_selected)
+    except Exception:
+        active_warnings = []
 
     resolved_date = pd.to_datetime(
         df_selected["time"].iloc[0], errors="coerce"
