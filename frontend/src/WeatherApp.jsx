@@ -172,7 +172,7 @@ export default function WeatherApp() {
     );
 
     return () => window.clearInterval(intervalId);
-  }, [searchedCity, selectedDate]);
+  }, [searchedCity]);
 
 
   const handleSearchSubmit = (e) => {
@@ -193,30 +193,38 @@ export default function WeatherApp() {
 
 
   const fetchTelemetryForDate = async (requestedDate) => {
-    if (!cityInput.trim()) return;
+  const locationToUse = searchedCity.trim();
 
-    setLoading(true);
-    setError('');
+  if (!locationToUse) return;
 
-    try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/climate/${encodeURIComponent(cityInput)}?selected_date=${encodeURIComponent(requestedDate)}`
-      );
+  setLoading(true);
+  setError('');
 
-      if (!response.ok) {
-        throw new Error('Unable to load telemetry for this date');
-      }
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/climate/${encodeURIComponent(locationToUse)}?selected_date=${encodeURIComponent(requestedDate)}`
+    );
 
-      const result = await response.json();
-      setTelemetryRows(result.today_hourly_data || []);
-      setSelectedDate(result.selected_date || requestedDate);
-    } catch (err) {
-      setError(err.message || 'Failed to fetch telemetry data');
-    } finally {
-      setLoading(false);
+    if (!response.ok) {
+      throw new Error('Unable to load telemetry for this date');
     }
-  };
 
+    const result = await response.json();
+
+    setTelemetryRows(result.today_hourly_data || []);
+    setSelectedDate(result.selected_date || requestedDate);
+
+    setData(prev => ({
+      ...prev,
+      ...result
+    }));
+
+  } catch (err) {
+    setError(err.message || 'Failed to fetch telemetry data');
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleDateChange = (e) => {
     const nextDate = e.target.value;

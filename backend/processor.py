@@ -94,7 +94,7 @@ def generate_active_warnings(df_today):
 
   if pd.isna(max_pm25):
     max_pm25 = 0
-    
+
   max_aqi = calculate_pm25_aqi(max_pm25)
 
   # Temperature Rules
@@ -167,3 +167,56 @@ def generate_active_warnings(df_today):
     })
 
   return warnings
+
+def generate_daily_summary(df):
+    """
+    Generates daily weather and air-quality summaries
+    from the processed hourly dataframe.
+    """
+
+    if df is None or df.empty:
+        return []
+
+    working_df = df.copy()
+
+    working_df["date"] = pd.to_datetime(working_df["time"]).dt.strftime("%Y-%m-%d")
+
+    daily_summary = (
+        working_df
+        .groupby("date")
+        .agg(
+            avg_temperature=("temperature", "mean"),
+            max_temperature=("temperature", "max"),
+            min_temperature=("temperature", "min"),
+            avg_humidity=("humidity", "mean"),
+            avg_pressure=("pressure", "mean"),
+            max_wind_speed=("wind_speed", "max"),
+            avg_pm2_5=("pm2_5", "mean"),
+            avg_pm10=("pm10", "mean"),
+            avg_no2=("no2", "mean"),
+            avg_co=("co", "mean"),
+            avg_rain_probability=("rain_probability", "mean"),
+            total_precipitation=("precipitation", "sum"),
+        )
+        .reset_index()
+    )
+
+    numeric_columns = [
+        "avg_temperature",
+        "max_temperature",
+        "min_temperature",
+        "avg_humidity",
+        "avg_pressure",
+        "max_wind_speed",
+        "avg_pm2_5",
+        "avg_pm10",
+        "avg_no2",
+        "avg_co",
+        "avg_rain_probability",
+        "total_precipitation",
+    ]
+
+    for column in numeric_columns:
+        daily_summary[column] = daily_summary[column].round(2)
+
+    return daily_summary.to_dict(orient="records")

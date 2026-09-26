@@ -1,7 +1,7 @@
 import plotly.express as px
 import streamlit as st
-from fetcher import fetch_climate_data, get_coordinates
-from processor import process_raw_data
+from backend.fetcher import fetch_climate_data, get_coordinates
+from backend.processor import process_raw_data
 
 st.set_page_config(
     page_title='Climate & Air Quality Analyzer',

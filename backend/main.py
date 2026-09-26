@@ -1,9 +1,9 @@
 import os
 import matplotlib.pyplot as plt
 
-from fetcher import fetch_climate_data, get_coordinates
-from processor import generate_daily_summary, process_raw_data
-from visualizer import create_climate_dashboard
+from backend.fetcher import fetch_climate_data, get_coordinates
+from backend.processor import generate_daily_summary, process_raw_data
+from backend.visualizer import create_climate_dashboard
 
 
 def compare_two_cities(city1, city2):
