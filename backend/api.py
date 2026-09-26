@@ -1,4 +1,5 @@
 
+
 """Climate Analytics API (FastAPI).
 
 Run from the ``backend/`` directory on Render::
@@ -169,7 +170,9 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
     except Exception:
         active_warnings = []
 
-    available_dates = (
+    # Sorted so the Telemetry "View date" dropdown lists the full
+    # ~30-day archive + 7-day forecast in chronological order.
+    available_dates = sorted(
         pd.to_datetime(df["time"], errors="coerce")
         .dt.strftime("%Y-%m-%d")
         .dropna()
