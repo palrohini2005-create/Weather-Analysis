@@ -1,3 +1,4 @@
+
 # processor.py
 from datetime import datetime
 import pandas as pd
@@ -25,8 +26,12 @@ def process_raw_data(weather_json, air_json):
         "co": air_json["hourly"]["carbon_monoxide"],
   })
 
-  df = pd.merge(df_weather, df_air, on="time", how="inner")
-  df = df.interpolate(method="linear")
+  # Outer merge keeps the full ~30-day weather history even where
+  # air-quality hours are missing (provider gaps, shorter forecast).
+  # Missing pollution values are interpolated so charts stay continuous.
+  df = pd.merge(df_weather, df_air, on="time", how="outer")
+  df = df.sort_values("time").reset_index(drop=True)
+  df = df.interpolate(method="linear", limit_direction="both")
 
   df["temp_24h_ma"] = df["temperature"].rolling(window=24, min_periods=1).mean()
   df["pm2_5_24h_ma"] = df["pm2_5"].rolling(window=24, min_periods=1).mean()
