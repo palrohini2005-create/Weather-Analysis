@@ -1640,9 +1640,7 @@ export default function WeatherApp() {
 
                 <div className={`${sidebarCollapsed ? 'lg:hidden' : ''}`}>
 
-                  <div className="text-xs font-bold text-blue-900">
-                    Open-Meteo
-                  </div>
+                  
 
                   <div className="text-[10px] text-blue-700 mt-0.5">
                     30-Day Archive + 7-Day Forecast
@@ -2253,7 +2251,7 @@ export default function WeatherApp() {
                                 : 'text-slate-500 hover:text-slate-700'
                             }`}
                           >
-                            Monthly (12M)
+                            Monthly
                           </button>
 
                         </div>
