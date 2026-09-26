@@ -1,4 +1,3 @@
-
 """Climate + air-quality data acquisition.
 
 Weather providers (in order of preference):
@@ -24,7 +23,40 @@ class ClimateFetchError(RuntimeError):
 
 
 CLIMATE_CACHE = {}
-CLIMATE_CACHE_TTL_SECONDS = 15 * 60
+CLIMATE_CACHE_TTL_SECONDS = 30 * 60
+# Serve stale cache (with a warning) for up to 6h when providers
+# return 429 / rate-limit, instead of failing the request.
+CLIMATE_STALE_MAX_SECONDS = 6 * 60 * 60
+
+# Circuit-breaker: skip Visual Crossing for a while after a 429/quota
+# error so every request doesn't waste one VC call + one Open-Meteo call.
+_VC_COOLDOWN_UNTIL = 0.0
+_VC_COOLDOWN_SECONDS = 10 * 60
+
+
+def _is_rate_limit_error(error):
+    text = str(error).lower()
+    return ("rate limit" in text or "rate-limit" in text
+            or "429" in text or "quota" in text)
+
+
+def _get_with_retry(url, params=None, headers=None, timeout=30, tries=3):
+    """GET with retries on HTTP 429 (respects Retry-After when present)."""
+    last_error = None
+    for attempt in range(tries):
+        response = requests.get(url, params=params, headers=headers, timeout=timeout)
+        if response.status_code != 429:
+            return response
+        last_error = response
+        retry_after = response.headers.get("Retry-After") if hasattr(response, "headers") else None
+        try:
+            wait = float(retry_after) if retry_after else (2.0 * (attempt + 1))
+        except (TypeError, ValueError):
+            wait = 2.0 * (attempt + 1)
+        wait = min(wait, 20.0)
+        print(f"[Warning] HTTP 429, retry {attempt + 1}/{tries} after {wait:.0f}s")
+        time.sleep(wait)
+    return last_error
 
 VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY")
 
@@ -244,11 +276,12 @@ def fetch_open_meteo_weather(lat, lon):
     }
 
     try:
-        response = requests.get(
+        response = _get_with_retry(
             OPEN_METEO_FORECAST_URL,
             params=params,
             headers={"User-Agent": "ClimateAnalysisApp/1.0"},
             timeout=30,
+            tries=3,
         )
 
         if response.status_code == 429:
@@ -493,11 +526,12 @@ def fetch_air_quality(lat, lon):
     }
 
     try:
-        response = requests.get(
+        response = _get_with_retry(
             OPEN_METEO_AIR_QUALITY_URL,
             params=params,
             headers=headers,
             timeout=30,
+            tries=3,
         )
 
         if response.status_code == 429:
@@ -574,16 +608,25 @@ def _resolve_weather(lat, lon):
     outage), automatically falls back to Open-Meteo so the API
     never goes down because of one provider.
     """
+    global _VC_COOLDOWN_UNTIL
 
     visual_crossing_error = None
 
     if VISUAL_CROSSING_API_KEY:
-        try:
-            return fetch_visual_crossing_weather(lat, lon), "visual-crossing"
-        except ClimateFetchError as error:
-            visual_crossing_error = error
-            print(f"[Warning] Visual Crossing unavailable: {error}")
-            print("[Warning] Falling back to Open-Meteo weather.")
+        if time.monotonic() < _VC_COOLDOWN_UNTIL:
+            visual_crossing_error = ClimateFetchError(
+                "Visual Crossing cooling down after rate limit."
+            )
+            print("[Warning] Skipping Visual Crossing (cooldown).")
+        else:
+            try:
+                return fetch_visual_crossing_weather(lat, lon), "visual-crossing"
+            except ClimateFetchError as error:
+                visual_crossing_error = error
+                print(f"[Warning] Visual Crossing unavailable: {error}")
+                print("[Warning] Falling back to Open-Meteo weather.")
+                if _is_rate_limit_error(error):
+                    _VC_COOLDOWN_UNTIL = time.monotonic() + _VC_COOLDOWN_SECONDS
 
     try:
         return fetch_open_meteo_weather(lat, lon), "open-meteo"
@@ -639,10 +682,19 @@ def fetch_climate_data(lat, lon):
 
     # --------------------------------------------------------
     # WEATHER (Visual Crossing -> Open-Meteo fallback)
+    # with stale-cache fallback on rate limits
     # --------------------------------------------------------
 
-    weather_json, weather_source = _resolve_weather(lat, lon)
-    print(f"[Info] Weather source: {weather_source}")
+    try:
+        weather_json, weather_source = _resolve_weather(lat, lon)
+        print(f"[Info] Weather source: {weather_source}")
+    except ClimateFetchError as error:
+        if cached_entry is not None:
+            cached_at, cached_data = cached_entry
+            if time.monotonic() - cached_at < CLIMATE_STALE_MAX_SECONDS:
+                print(f"[Warning] Providers rate-limited, serving stale cache: {error}")
+                return cached_data
+        raise
 
     # --------------------------------------------------------
     # AIR QUALITY
@@ -689,3 +741,4 @@ def fetch_climate_data(lat, lon):
     )
 
     return climate_data
+
