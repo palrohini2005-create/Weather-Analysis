@@ -1,4 +1,5 @@
 
+
 import { useEffect, useState } from 'react';
 import {
   Menu,
@@ -338,11 +339,35 @@ export default function WeatherApp() {
         };
       });
 
-    // Telemetry table keeps the full 30-day archive.
-    // Charts only show a recent window so they stay readable:
-    // Daily -> last 7 days, Monthly -> last 12 months
-    // (falls back to last 2 months when only ~30-37 days exist).
-    const chartWindow = chartRange === 'monthly' ? 12 : 7;
+    // Telemetry dropdown = only 3 days (yesterday/today/tomorrow).
+    // Charts: Daily -> last 7 days from hourly_data,
+    // Monthly -> last 3 months from daily_history (lightweight daily means).
+    if (chartRange === 'monthly' && data?.daily_history?.length) {
+      const byMonth = {};
+      for (const d of data.daily_history) {
+        const m = String(d.date || '').slice(0, 7);
+        if (!m) continue;
+        if (!byMonth[m]) byMonth[m] = { temps: [], prec: [], rain: [] };
+        if (d.avg_temp != null) byMonth[m].temps.push(d.avg_temp);
+        if (d.precipitation != null) byMonth[m].prec.push(d.precipitation);
+        if (d.rain_probability != null) byMonth[m].rain.push(d.rain_probability);
+      }
+      const avg = (a) => a.length ? Number((a.reduce((s, v) => s + v, 0) / a.length).toFixed(2)) : 0;
+      const sum = (a) => Number(a.reduce((s, v) => s + v, 0).toFixed(2));
+      return Object.entries(byMonth)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .slice(-3)
+        .map(([period, v]) => ({
+          period,
+          averageTemperature: avg(v.temps),
+          averageMovingAverage: avg(v.temps),
+          pm2_5: 0, pm10: 0, no2: 0, co: 0,
+          rain_probability: avg(v.rain),
+          precipitation: sum(v.prec),
+          overall_aqi: 0,
+        }));
+    }
+    const chartWindow = chartRange === 'monthly' ? 3 : 7;
     return sortedPeriods.slice(-chartWindow);
   };
 
@@ -2225,7 +2250,7 @@ export default function WeatherApp() {
                       <div className="mt-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-2">
 
                         <span className="px-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Chart range — {chartRange === 'monthly' ? 'Last 12 months' : 'Last 7 days'}
+                          Chart range — {chartRange === 'monthly' ? 'Last 3 months' : 'Last 7 days'}
                         </span>
 
                         <div className="grid grid-cols-2 gap-1">
@@ -2244,7 +2269,7 @@ export default function WeatherApp() {
 
                           <button
                             onClick={() => setChartRange('monthly')}
-                            title="Show last 12 months in chart"
+                            title="Show last 3 months in chart"
                             className={`px-4 py-2 rounded-lg text-xs font-semibold transition ${
                               chartRange === 'monthly'
                                 ? 'bg-white text-blue-700 shadow-sm'
