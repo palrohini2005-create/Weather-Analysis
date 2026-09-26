@@ -123,7 +123,13 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
         )
 
     try:
-        raw_weather, raw_air = fetch_climate_data(lat, lon)
+        climate_result = fetch_climate_data(lat, lon)
+        # Backward-compat: fetcher returns (weather, air) or (weather, air, daily).
+        if len(climate_result) == 3:
+            raw_weather, raw_air, daily_history = climate_result
+        else:
+            raw_weather, raw_air = climate_result
+            daily_history = []
     except ClimateFetchError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
     except Exception as error:  # never leak a raw 500 for provider issues
@@ -157,7 +163,11 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
             ),
         )
 
-    df_selected = get_date_hourly_data(df, target_date_str=selected_date)
+    _req = (selected_date or "").strip()
+    if _req and available_dates and _req not in available_dates:
+        # Old 30-day bookmark/link -> snap to today within 3-day window.
+        _req = ""
+    df_selected = get_date_hourly_data(df, target_date_str=_req or None)
 
     if df_selected is None or df_selected.empty:
         raise HTTPException(
@@ -170,15 +180,23 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
     except Exception:
         active_warnings = []
 
-    # Sorted so the Telemetry "View date" dropdown lists the full
-    # ~30-day archive + 7-day forecast in chronological order.
-    available_dates = sorted(
+    # Telemetry dropdown: ONLY yesterday + today + tomorrow (3 days).
+    # Charts use hourly_data (7-day) + daily_history (3-month) instead.
+    from datetime import date as _date, timedelta as _td
+    _today = _date.today()
+    _wanted = sorted([(_today + _td(days=d)).isoformat() for d in (-1, 0, 1)])
+    _have = set(
         pd.to_datetime(df["time"], errors="coerce")
         .dt.strftime("%Y-%m-%d")
         .dropna()
         .unique()
         .tolist()
     )
+    available_dates = [d for d in _wanted if d in _have]
+    if not available_dates:
+        # Fallback: closest 3 dates to today (provider edge cases).
+        _all = sorted(_have)
+        available_dates = _all[-3:] if len(_all) >= 3 else _all
 
     resolved_date = pd.to_datetime(
         df_selected["time"].iloc[0], errors="coerce"
@@ -189,10 +207,26 @@ def get_climate_analysis(city: str, selected_date: Optional[str] = None):
         else (selected_date or "")
     )
 
+    # Sanitize daily_history to JSON-safe primitives.
+    _daily_clean = []
+    for _d in (daily_history or []):
+        try:
+            _daily_clean.append({
+                "date": str(_d.get("date")),
+                "avg_temp": _safe_round(_d.get("avg_temp")),
+                "max_temp": _safe_round(_d.get("max_temp")),
+                "min_temp": _safe_round(_d.get("min_temp")),
+                "precipitation": _safe_round(_d.get("precipitation")),
+                "rain_probability": _safe_round(_d.get("rain_probability")),
+            })
+        except Exception:
+            continue
+
     return {
         "location": full_name,
         "selected_date": resolved_date_str,
         "available_dates": available_dates,
+        "daily_history": _daily_clean,
         "summary": {
             "avg_temp": _safe_round(df_selected["temperature"].mean()),
             "max_temp": _safe_round(df_selected["temperature"].max()),
