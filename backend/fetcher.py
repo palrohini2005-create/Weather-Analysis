@@ -1,4 +1,10 @@
+
 """Climate + air-quality data acquisition.
+
+Telemetry (hourly): yesterday + today + tomorrow (3 days) + 7-day
+chart window  -> hourly fetch uses past_days=7, forecast_days=7.
+Monthly (3-month) charts -> lightweight DAILY fetch (past 90 days),
+never hourly, so provider quota / 429s stay low.
 
 Weather providers (in order of preference):
 
@@ -21,6 +27,11 @@ import requests
 class ClimateFetchError(RuntimeError):
     """Raised when a weather provider cannot return usable data."""
 
+
+HOURLY_PAST_DAYS = 7
+HOURLY_FORECAST_DAYS = 7
+DAILY_PAST_DAYS = 90
+DAILY_FORECAST_DAYS = 7
 
 CLIMATE_CACHE = {}
 CLIMATE_CACHE_TTL_SECONDS = 30 * 60
@@ -58,6 +69,12 @@ def _get_with_retry(url, params=None, headers=None, timeout=30, tries=3):
         time.sleep(wait)
     return last_error
 
+def _get_vc_key():
+    """Read VC key fresh on every call (picks up key changes after restart)."""
+    return (os.getenv("VISUAL_CROSSING_API_KEY") or "").strip() or None
+
+
+# Kept for backward-compat imports; prefer _get_vc_key().
 VISUAL_CROSSING_API_KEY = os.getenv("VISUAL_CROSSING_API_KEY")
 
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -266,11 +283,12 @@ def fetch_open_meteo_weather(lat, lon):
             "precipitation_probability",
             "precipitation",
         ],
-        # 30-day archive + 7-day forecast = ~37 days hourly.
-        # This feeds the Telemetry "View date" dropdown (1 month)
-        # and the Daily (last 7D) / Monthly (last 12M) charts.
-        "past_days": 30,
-        "forecast_days": 7,
+        # Hourly window: past 7 + next 7 days (~14 days hourly).
+        # Covers Telemetry 3-day dropdown (yesterday/today/tomorrow)
+        # + Daily 7-day chart. Monthly 3-month chart uses the
+        # lightweight DAILY fetch below, not hourly.
+        "past_days": HOURLY_PAST_DAYS,
+        "forecast_days": HOURLY_FORECAST_DAYS,
         "timezone": "auto",
         "wind_speed_unit": "kmh",
     }
@@ -335,7 +353,8 @@ def fetch_visual_crossing_weather(lat, lon):
     processor.py does not need to be changed.
     """
 
-    if not VISUAL_CROSSING_API_KEY:
+    vc_key = _get_vc_key()
+    if not vc_key:
         raise ClimateFetchError(
             "VISUAL_CROSSING_API_KEY is not configured."
         )
@@ -344,12 +363,11 @@ def fetch_visual_crossing_weather(lat, lon):
 
     location = f"{lat},{lon}"
 
-    # Without explicit dates Visual Crossing returns only the 15-day
-    # forecast, which after the inner/outer merge with air-quality
-    # (3-7 day forecast) collapses to ~3 visible dates.
-    # Request the full 30-day archive + 7-day forecast instead.
-    start_date = (date.today() - timedelta(days=30)).isoformat()
-    end_date = (date.today() + timedelta(days=7)).isoformat()
+    # Hourly window: past 7 + next 7 days. Telemetry needs only
+    # yesterday/today/tomorrow; Daily chart needs last 7 days.
+    # Monthly 3-month chart uses the lightweight DAILY fetch.
+    start_date = (date.today() - timedelta(days=HOURLY_PAST_DAYS)).isoformat()
+    end_date = (date.today() + timedelta(days=HOURLY_FORECAST_DAYS)).isoformat()
 
     url = (
         "https://weather.visualcrossing.com/"
@@ -358,7 +376,7 @@ def fetch_visual_crossing_weather(lat, lon):
     )
 
     params = {
-        "key": VISUAL_CROSSING_API_KEY,
+        "key": vc_key,
         "unitGroup": "metric",
         "include": "days,hours",
         "elements": (
@@ -514,10 +532,9 @@ def fetch_air_quality(lat, lon):
             "carbon_monoxide",
         ],
 
-        # Match the weather window: 30-day archive + 7-day forecast
-        # (API allows past_days up to 92, forecast up to 7).
-        "past_days": 30,
-        "forecast_days": 7,
+        # Match the hourly weather window: past 7 + next 7 days.
+        "past_days": HOURLY_PAST_DAYS,
+        "forecast_days": HOURLY_FORECAST_DAYS,
         "timezone": "auto",
     }
 
@@ -597,6 +614,70 @@ def create_empty_air_quality(weather_json):
     }
 
 
+
+# ============================================================
+# DAILY HISTORY FOR MONTHLY (3-MONTH) CHARTS — lightweight
+# ============================================================
+
+def fetch_daily_history(lat, lon):
+    """Fetch ~90-day daily means for the Monthly 3-month chart.
+
+    Tiny payload (~97 daily rows, not hourly), keyless Open-Meteo.
+    NEVER fails the whole request: returns [] on rate-limit so
+    Telemetry (3-day) + Daily 7-day chart still work.
+    """
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": [
+            "temperature_2m_mean",
+            "temperature_2m_max",
+            "temperature_2m_min",
+            "precipitation_sum",
+            "precipitation_probability_mean",
+        ],
+        "past_days": DAILY_PAST_DAYS,
+        "forecast_days": DAILY_FORECAST_DAYS,
+        "timezone": "auto",
+    }
+    try:
+        response = _get_with_retry(
+            OPEN_METEO_FORECAST_URL,
+            params=params,
+            headers={"User-Agent": "ClimateAnalysisApp/1.0"},
+            timeout=30,
+            tries=2,
+        )
+        if response.status_code == 429:
+            print("[Warning] Daily history rate-limited, monthly chart will fallback.")
+            return []
+        response.raise_for_status()
+        data = response.json() or {}
+        daily = data.get("daily") or {}
+        times = daily.get("time") or []
+        if not times:
+            return []
+        out = []
+        n = len(times)
+        for i in range(n):
+            def _at(key):
+                vals = daily.get(key) or []
+                return vals[i] if i < len(vals) else None
+            out.append({
+                "date": times[i],
+                "avg_temp": _at("temperature_2m_mean"),
+                "max_temp": _at("temperature_2m_max"),
+                "min_temp": _at("temperature_2m_min"),
+                "precipitation": _at("precipitation_sum"),
+                "rain_probability": _at("precipitation_probability_mean"),
+            })
+        print(f"[Success] Daily history fetched ({len(out)} days).")
+        return out
+    except Exception as error:
+        print(f"[Warning] Daily history unavailable: {error}")
+        return []
+
+
 # ============================================================
 # MAIN FUNCTION
 # ============================================================
@@ -612,7 +693,7 @@ def _resolve_weather(lat, lon):
 
     visual_crossing_error = None
 
-    if VISUAL_CROSSING_API_KEY:
+    if _get_vc_key():
         if time.monotonic() < _VC_COOLDOWN_UNTIL:
             visual_crossing_error = ClimateFetchError(
                 "Visual Crossing cooling down after rate limit."
@@ -651,7 +732,11 @@ def fetch_climate_data(lat, lon):
     Air Quality:
         Open-Meteo (with graceful null fallback).
 
-    The return structure remains compatible with processor.py.
+    Daily history (90-day daily means for Monthly 3-month chart):
+        Open-Meteo daily, best-effort [] on rate-limit.
+
+    Returns (weather_json, air_json, daily_history).
+    For backward-compat, callers may unpack only the first 2.
     """
 
     cache_key = (
@@ -726,9 +811,15 @@ def fetch_climate_data(lat, lon):
     # CACHE
     # --------------------------------------------------------
 
+    try:
+        daily_history = fetch_daily_history(lat, lon)
+    except Exception:
+        daily_history = []
+
     climate_data = (
         weather_json,
         air_json,
+        daily_history,
     )
 
     CLIMATE_CACHE[cache_key] = (
