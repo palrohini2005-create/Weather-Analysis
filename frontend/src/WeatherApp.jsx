@@ -181,7 +181,7 @@ export default function WeatherApp() {
 
     const intervalId = window.setInterval(
       refreshCurrentWeather,
-      10 * 60 * 1000
+      60 * 60 * 1000
     );
 
     return () => window.clearInterval(intervalId);
@@ -245,10 +245,12 @@ export default function WeatherApp() {
   }
 };
 
-  const handleDateChange = (e) => {
-    const nextDate = e.target.value;
-    setSelectedDate(nextDate);
-    fetchTelemetryForDate(nextDate);
+ const handleDateChange = (e) => {
+  if (loading) return; // ignore rapid clicks while loading
+  const nextDate = e.target.value;
+  if (nextDate === selectedDate) return;
+  setSelectedDate(nextDate);
+  fetchTelemetryForDate(nextDate);
   };
 
 
