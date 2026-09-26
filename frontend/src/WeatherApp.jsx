@@ -47,7 +47,9 @@ import {
   Legend
 } from 'recharts';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://climate-analysis-api.onrender.com';
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || 'https://climate-analysis-api.onrender.com'
+).replace(/\/+$/, '');
 
 export default function WeatherApp() {
 
@@ -115,7 +117,16 @@ export default function WeatherApp() {
       );
 
       if (!response.ok) {
-        throw new Error('City not found or server error');
+        let detail = '';
+        try {
+          detail = (await response.json()).detail || '';
+        } catch {
+          // Response was not JSON - fall through to generic messages.
+        }
+        if (response.status === 404) {
+          throw new Error(detail || `City "${city.trim()}" not found. Try another spelling.`);
+        }
+        throw new Error(detail || 'Weather service is temporarily unavailable. Please retry in a minute.');
       }
 
       const result = await response.json();
@@ -206,7 +217,13 @@ export default function WeatherApp() {
     );
 
     if (!response.ok) {
-      throw new Error('Unable to load telemetry for this date');
+      let detail = '';
+      try {
+        detail = (await response.json()).detail || '';
+      } catch {
+        // Response was not JSON - fall through to the generic message.
+      }
+      throw new Error(detail || 'Unable to load telemetry for this date');
     }
 
     const result = await response.json();
