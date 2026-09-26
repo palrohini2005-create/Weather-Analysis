@@ -1,3 +1,4 @@
+
 import os
 import matplotlib.pyplot as plt
 
@@ -18,7 +19,7 @@ def compare_two_cities(city1, city2):
             print(f"❌ Failed to resolve location for {city}. Aborting comparison.")
             return
 
-        raw_weather, raw_air = fetch_climate_data(lat, lon)
+        raw_weather, raw_air, *_rest = fetch_climate_data(lat, lon)
         df = process_raw_data(raw_weather, raw_air)
         city_dfs[city] = df
 
@@ -73,7 +74,7 @@ def run_pipeline():
     print(f"   Found: {display_name} ({lat}, {lon})")
 
     print("\n2. Requesting raw climate and pollution payloads...")
-    raw_weather, raw_air = fetch_climate_data(lat, lon)
+    raw_weather, raw_air, *_rest = fetch_climate_data(lat, lon)
 
     print("\n3. Transforming & cleaning data with Pandas...")
     df_hourly = process_raw_data(raw_weather, raw_air)
