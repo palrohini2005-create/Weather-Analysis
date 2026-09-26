@@ -1,3 +1,4 @@
+
 """Climate + air-quality data acquisition.
 
 Weather providers (in order of preference):
@@ -233,7 +234,10 @@ def fetch_open_meteo_weather(lat, lon):
             "precipitation_probability",
             "precipitation",
         ],
-        "past_days": 7,
+        # 30-day archive + 7-day forecast = ~37 days hourly.
+        # This feeds the Telemetry "View date" dropdown (1 month)
+        # and the Daily (last 7D) / Monthly (last 12M) charts.
+        "past_days": 30,
         "forecast_days": 7,
         "timezone": "auto",
         "wind_speed_unit": "kmh",
@@ -303,12 +307,21 @@ def fetch_visual_crossing_weather(lat, lon):
             "VISUAL_CROSSING_API_KEY is not configured."
         )
 
+    from datetime import date, timedelta
+
     location = f"{lat},{lon}"
+
+    # Without explicit dates Visual Crossing returns only the 15-day
+    # forecast, which after the inner/outer merge with air-quality
+    # (3-7 day forecast) collapses to ~3 visible dates.
+    # Request the full 30-day archive + 7-day forecast instead.
+    start_date = (date.today() - timedelta(days=30)).isoformat()
+    end_date = (date.today() + timedelta(days=7)).isoformat()
 
     url = (
         "https://weather.visualcrossing.com/"
         "VisualCrossingWebServices/rest/services/timeline/"
-        f"{location}"
+        f"{location}/{start_date}/{end_date}"
     )
 
     params = {
@@ -468,8 +481,10 @@ def fetch_air_quality(lat, lon):
             "carbon_monoxide",
         ],
 
-        "past_days": 7,
-        "forecast_days": 3,
+        # Match the weather window: 30-day archive + 7-day forecast
+        # (API allows past_days up to 92, forecast up to 7).
+        "past_days": 30,
+        "forecast_days": 7,
         "timezone": "auto",
     }
 
