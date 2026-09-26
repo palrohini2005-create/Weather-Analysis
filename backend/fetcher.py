@@ -34,10 +34,11 @@ DAILY_PAST_DAYS = 90
 DAILY_FORECAST_DAYS = 7
 
 CLIMATE_CACHE = {}
-CLIMATE_CACHE_TTL_SECONDS = 30 * 60
+CLIMATE_CACHE_TTL_SECONDS = 2 * 60 * 60
 # Serve stale cache (with a warning) for up to 6h when providers
 # return 429 / rate-limit, instead of failing the request.
-CLIMATE_STALE_MAX_SECONDS = 6 * 60 * 60
+GEOCODE_CACHE = {}
+GEOCODE_TTL_SECONDS = 24 * 60 * 60  # city names don't move
 
 # Circuit-breaker: skip Visual Crossing for a while after a 429/quota
 # error so every request doesn't waste one VC call + one Open-Meteo call.
@@ -245,7 +246,16 @@ def get_coordinates(city_name):
         return None, None, None
 
     cleaned = city_name.strip()
+    cache_key = cleaned.lower()
 
+    cached = GEOCODE_CACHE.get(cache_key)
+
+    if cached:
+        cached_at, cached_data = cached
+        if time.monotonic() - cached_at < GEOCODE_TTL_SECONDS:
+            print(f"[Geocoding Cache] {cleaned}")
+            return cached_data
+            
     for provider_name, provider in (
         ("Nominatim", _geocode_with_nominatim),
         ("Open-Meteo geocoding", _geocode_with_open_meteo),
@@ -547,8 +557,8 @@ def fetch_air_quality(lat, lon):
             OPEN_METEO_AIR_QUALITY_URL,
             params=params,
             headers=headers,
-            timeout=30,
-            tries=3,
+            timeout=20,
+            tries=2,
         )
 
         if response.status_code == 429:
