@@ -4,27 +4,40 @@ services:
   # =========================
   - type: web
     name: climate-analysis-api
-    runtime: python 
+    env: python
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn api:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
+    envVars:
+      # Optional. When empty/unset the API automatically uses the free,
+      # keyless Open-Meteo provider. Set it in the Render dashboard if
+      # you want Visual Crossing as the primary weather source.
+      - key: VISUAL_CROSSING_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
 
   # =========================
   # FRONTEND - REACT/VITE
   # =========================
   - type: web
     name: climate-analysis-frontend
-    runtime: static
+    env: static
     rootDir: frontend
-    buildCommand: npm install && npm run build
+    # --include=dev is required: Vite lives in devDependencies and
+    # NODE_ENV=production (Render's default) would otherwise skip it,
+    # failing the build with "vite: not found".
+    buildCommand: npm install --include=dev && npm run build
     staticPublishPath: dist
-
     envVars:
+      # MUST match your real backend URL (no trailing slash).
+      # Vite bakes this in at build time, so redeploy the frontend
+      # after changing it.
       - key: VITE_API_BASE_URL
         value: https://climate-analysis-api.onrender.com
-
     routes:
       - type: rewrite
         source: /*
         destination: /index.html
+
